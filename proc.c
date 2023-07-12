@@ -21,6 +21,54 @@ extern void trapret(void);
 
 static void wakeup1(void *chan);
 
+static pte_t *
+walkpgdir(pde_t *pgdir, const void *va, int alloc)
+{
+  pde_t *pde;
+  pte_t *pgtab;
+
+  pde = &pgdir[PDX(va)];
+  if (*pde & PTE_P)
+  {
+    pgtab = (pte_t *)P2V(PTE_ADDR(*pde));
+  }
+  else
+  {
+    if (!alloc || (pgtab = (pte_t *)kalloc()) == 0)
+      return 0;
+    // Make sure all those PTE_P bits are zero.
+    memset(pgtab, 0, PGSIZE);
+    // The permissions here are overly generous, but they can
+    // be further restricted by the permissions in the page table
+    // entries, if necessary.
+    *pde = V2P(pgtab) | PTE_P | PTE_W | PTE_U;
+  }
+  return &pgtab[PTX(va)];
+}
+
+static int
+mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
+{
+  char *a, *last;
+  pte_t *pte;
+
+  a = (char *)PGROUNDDOWN((uint)va);
+  last = (char *)PGROUNDDOWN(((uint)va) + size - 1);
+  for (;;)
+  {
+    if ((pte = walkpgdir(pgdir, a, 1)) == 0)
+      return -1;
+    if (*pte & PTE_P)
+      panic("remap");
+    *pte = pa | perm | PTE_P;
+    if (a == last)
+      break;
+    a += PGSIZE;
+    pa += PGSIZE;
+  }
+  return 0;
+}
+
 void pinit(void)
 {
   initlock(&ptable.lock, "ptable");
@@ -183,6 +231,7 @@ int growproc(int n)
 // Caller must set state of returned proc to RUNNABLE.
 int fork(void)
 {
+  // cprintf("Forking\n");
   int i, pid;
   struct proc *np;
   struct proc *curproc = myproc();
@@ -192,15 +241,37 @@ int fork(void)
   {
     return -1;
   }
-
+  // Original
   // Copy process state from proc.
-  if ((np->pgdir = copyuvm(curproc->pgdir, curproc->sz)) == 0)
+  // if ((np->pgdir = copyuvm(curproc->pgdir, curproc->sz)) == 0)
+  // {
+  //   kfree(np->kstack);
+  //   np->kstack = 0;
+  //   np->state = UNUSED;
+  //   return -1;
+  // }
+
+  // COW
+
+  pte_t *pte;
+  uint pa, flags;
+  if ((np->pgdir = setupkvm()) == 0)
+    return 0;
+  for (i = 0; i < curproc->sz; i += PGSIZE)
   {
-    kfree(np->kstack);
-    np->kstack = 0;
-    np->state = UNUSED;
-    return -1;
+    if ((pte = walkpgdir(curproc->pgdir, (void *)i, 0)) == 0)
+      panic("copyuvm: pte should exist");
+    *pte = *pte & ~PTE_W;
+    pa = PTE_ADDR(*pte);
+    flags = PTE_FLAGS(*pte);
+    if (mappages(np->pgdir, (void *)i, PGSIZE, pa, flags) < 0)
+      goto bad;
+    // cprintf("pa: %x flags: %x\n", PTE_ADDR(*pte), PTE_FLAGS(*pte));
+    incrementreferences(pa);
+    lcr3(V2P(curproc->pgdir));
+    lcr3(V2P(np->pgdir));
   }
+
   np->sz = curproc->sz;
   np->parent = curproc;
   *np->tf = *curproc->tf;
@@ -222,8 +293,11 @@ int fork(void)
   np->state = RUNNABLE;
 
   release(&ptable.lock);
-
   return pid;
+
+bad:
+  freevm(np->pgdir);
+  return -1;
 }
 
 // Exit the current process.  Does not return.

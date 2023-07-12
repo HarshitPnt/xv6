@@ -83,6 +83,7 @@ int sys_date(void)
 
 int sys_pgtPrint(void)
 {
+
   struct proc *currproc = myproc();
   pde_t *pde = currproc->pgdir;
   for (int i = 0; i < NPDENTRIES; ++i)
@@ -94,7 +95,7 @@ int sys_pgtPrint(void)
       for (int j = 0; j < NPTENTRIES; ++j)
       {
         if ((PTE_FLAGS(*curr) & PTE_P) && (PTE_FLAGS(*curr) & PTE_U))
-          cprintf("Entry No: %x Virtual Address: 0x%x Physical Address: 0x%x\n", i * NPTENTRIES + j, PGADDR(i, j, 0), *curr);
+          cprintf("Entry No: %x Virtual Address: 0x%x Physical Address: 0x%x Write Bit: %x\n", i * NPTENTRIES + j, PGADDR(i, j, 0), *curr, (PTE_FLAGS(*curr) & PTE_W) >> 1);
         curr += 1;
       }
     }

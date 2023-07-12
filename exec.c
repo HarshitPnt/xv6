@@ -7,50 +7,8 @@
 #include "x86.h"
 #include "elf.h"
 
-void sys_pgtPrint2(pde_t *pde)
-{
-  for (int i = 0; i < NPDENTRIES; ++i)
-  {
-    pte_t *inner_addr = (pte_t *)P2V(PTE_ADDR(*pde));
-    if ((PTE_FLAGS(*pde) & PTE_P) && (PTE_FLAGS(*pde) & PTE_U))
-    {
-      pte_t *curr = inner_addr;
-      for (int j = 0; j < NPTENTRIES; ++j)
-      {
-        if ((PTE_FLAGS(*curr) & PTE_P) && (PTE_FLAGS(*curr) & PTE_U))
-          cprintf("Entry No: %x Virtual Address: 0x%x Physical Address: 0x%x\n", i * NPTENTRIES + j, PGADDR(i, j, 0), *curr);
-        curr += 1;
-      }
-    }
-    pde += 1;
-  }
-}
-
-void find_readonly_segments(char *elf_file)
-{
-  struct proc *currproc = myproc();
-  cprintf("%s\n", currproc->name);
-  struct proghdr *ph, *eph;
-  struct elfhdr *elf;
-  elf = (struct elfhdr *)elf_file;
-  ph = (struct proghdr *)(elf_file + elf->phoff);
-  eph = ph + elf->phnum;
-
-  for (; ph < eph; ph++)
-  {
-    if (ph->flags & ELF_PROG_FLAG_EXEC)
-      continue;
-    if (ph->flags & ELF_PROG_FLAG_WRITE)
-      continue;
-    cprintf("Read-only segment found:\n");
-    cprintf("Virtual address: 0x%lx\n", ph->vaddr);
-    cprintf("Size in memory: %d bytes\n", ph->memsz);
-  }
-}
-
 int exec(char *path, char **argv)
 {
-  // cprintf("Starting exec of %s %s\n", path, *(argv));
   char *s, *last;
   int i, off;
   uint argc, sz, sp, ustack[3 + MAXARG + 1];
@@ -69,7 +27,9 @@ int exec(char *path, char **argv)
     return -1;
   }
   ilock(ip);
+
   pgdir = 0;
+
   // Check ELF header
   if (readi(ip, (char *)&elf, 0, sizeof(elf)) != sizeof(elf))
     goto bad;
@@ -79,7 +39,6 @@ int exec(char *path, char **argv)
   if ((pgdir = setupkvm()) == 0)
     goto bad;
 
-  // find_readonly_segments((char *)&elf);
   // Load program into memory.
   sz = 0;
   for (i = 0, off = elf.phoff; i < elf.phnum; i++, off += sizeof(ph))
@@ -92,15 +51,20 @@ int exec(char *path, char **argv)
       goto bad;
     if (ph.vaddr + ph.memsz < ph.vaddr)
       goto bad;
+    // if ((sz = allocuvm(pgdir, sz, ph.vaddr + ph.memsz)) == 0)
+    //   goto bad;
+    // Only allocating memory for the readonly data and text segment
     if ((sz = allocuvm(pgdir, sz, ph.vaddr + ph.filesz)) == 0)
+      goto bad;
+    else
+      sz = ph.vaddr + ph.memsz;
+    if (sz >= KERNBASE)
       goto bad;
     if (ph.vaddr % PGSIZE != 0)
       goto bad;
     if (loaduvm(pgdir, (char *)ph.vaddr, ip, ph.off, ph.filesz) < 0)
       goto bad;
   }
-  // cprintf("First\n");
-  // sys_pgtPrint2(pgdir);
   iunlockput(ip);
   end_op();
   ip = 0;
@@ -112,9 +76,6 @@ int exec(char *path, char **argv)
     goto bad;
   clearpteu(pgdir, (char *)(sz - 2 * PGSIZE));
   sp = sz;
-
-  // cprintf("Second\n");
-  // sys_pgtPrint2(pgdir);
 
   // Push argument strings, prepare rest of stack in ustack.
   for (argc = 0; argv[argc]; argc++)

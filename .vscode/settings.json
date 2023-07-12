@@ -1,6 +1,14 @@
 {
     "files.associations": {
         "spinlock.h": "c",
-        "traps.h": "c"
+        "traps.h": "c",
+        "mmu.h": "c",
+        "memlayout.h": "c",
+        "proc.h": "c",
+        "defs.h": "c",
+        "user.h": "c",
+        "types.h": "c",
+        "stat.h": "c",
+        "param.h": "c"
     }
 }

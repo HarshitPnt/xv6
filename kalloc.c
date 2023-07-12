@@ -9,6 +9,8 @@
 #include "mmu.h"
 #include "spinlock.h"
 
+#define NFRAMES PHYSTOP >> 12
+
 void freerange(void *vstart, void *vend);
 extern char end[]; // first address after kernel loaded from ELF file
                    // defined by the kernel linker script in kernel.ld
@@ -23,7 +25,36 @@ struct
   struct spinlock lock;
   int use_lock;
   struct run *freelist;
+  uint framereferences[NFRAMES];
 } kmem;
+
+void decrementreferences(uint pa)
+{
+  acquire(&kmem.lock);
+  --kmem.framereferences[pa >> 12];
+  release(&kmem.lock);
+}
+
+void incrementreferences(uint pa)
+{
+  acquire(&kmem.lock);
+  ++kmem.framereferences[pa >> 12];
+  release(&kmem.lock);
+}
+uint getreferences(uint pa)
+{
+  uint framereference;
+  acquire(&kmem.lock);
+  framereference = kmem.framereferences[pa >> 12];
+  release(&kmem.lock);
+
+  return framereference;
+}
+
+void setreferences(uint pa, int count)
+{
+  kmem.framereferences[pa >> 12] = count;
+}
 
 // Initialization happens in two phases.
 // 1. main() calls kinit1() while still using entrypgdir to place just
@@ -48,8 +79,12 @@ void freerange(void *vstart, void *vend)
   char *p;
   p = (char *)PGROUNDUP((uint)vstart);
   for (; p + PGSIZE <= (char *)vend; p += PGSIZE)
+  {
+    setreferences((uint)p, 0);
     kfree(p);
+  }
 }
+
 // PAGEBREAK: 21
 //  Free the page of physical memory pointed at by v,
 //  which normally should have been returned by a
@@ -58,20 +93,25 @@ void freerange(void *vstart, void *vend)
 void kfree(char *v)
 {
   struct run *r;
-
   if ((uint)v % PGSIZE || v < end || V2P(v) >= PHYSTOP)
+  {
     panic("kfree");
+  }
+  if (kmem.framereferences[V2P(v) >> 12] > 0)
+    decrementreferences(V2P(v));
 
   // Fill with junk to catch dangling refs.
-  memset(v, 1, PGSIZE);
-
-  if (kmem.use_lock)
-    acquire(&kmem.lock);
-  r = (struct run *)v;
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  if (kmem.use_lock)
-    release(&kmem.lock);
+  if (kmem.framereferences[V2P(v) >> 12] == 0)
+  {
+    memset(v, 1, PGSIZE);
+    if (kmem.use_lock)
+      acquire(&kmem.lock);
+    r = (struct run *)v;
+    r->next = kmem.freelist;
+    kmem.freelist = r;
+    if (kmem.use_lock)
+      release(&kmem.lock);
+  }
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -86,8 +126,12 @@ kalloc(void)
     acquire(&kmem.lock);
   r = kmem.freelist;
   if (r)
+  {
+    setreferences(V2P((char *)r), 1);
     kmem.freelist = r->next;
+  }
   if (kmem.use_lock)
     release(&kmem.lock);
+
   return (char *)r;
 }
